@@ -1,0 +1,177 @@
+modules:
+  jira:projectPage:
+    - key: shipsignal-project-page
+      resource: main
+      resolver:
+        function: resolver
+      title: ShipSignal
+      layout: native
+  rovo:agent:
+    - key: shipsignal-agent
+      name: ShipSignal
+      description: Release confidence agent. Reads your Jira release and Teamwork
+        Graph context, then tells you whether you can ship - with evidence and
+        next actions.
+      prompt: resource:agent-resources;prompts/agent-prompt.txt
+      conversationStarters:
+        - Can we ship the next release?
+        - What is blocking the current release?
+        - Post a readiness summary for the team
+      actions:
+        - get-release-readiness
+        - get-release-blockers
+        - get-release-context
+        - post-readiness-comment
+        - create-risk-issue
+  action:
+    - key: get-release-readiness
+      name: Get release readiness
+      function: fn-get-readiness
+      actionVerb: GET
+      description: Computes a readiness score (0-100) and verdict (SHIP, RISKY
+        or HOLD) for a Jira fix version from issue completion, blockers, pull
+        requests and deployments in Teamwork Graph, and goal alignment. Returns
+        the score, verdict, counts and top blockers.
+      inputs:
+        projectKey:
+          title: Project key
+          type: string
+          required: true
+          description: Jira project key, e.g. PROJ
+        versionName:
+          title: Release version
+          type: string
+          required: true
+          description: Fix version name, e.g. v2.4.0
+    - key: get-release-blockers
+      name: Get release blockers
+      function: fn-get-blockers
+      actionVerb: GET
+      description: Lists the unresolved blocking and highest-priority issues for a
+        Jira fix version, including who they are assigned to, when they were
+        last updated, and which other work they block.
+      inputs:
+        projectKey:
+          title: Project key
+          type: string
+          required: true
+          description: Jira project key, e.g. PROJ
+        versionName:
+          title: Release version
+          type: string
+          required: true
+          description: Fix version name, e.g. v2.4.0
+    - key: get-release-context
+      name: Get release context
+      function: fn-get-context
+      actionVerb: GET
+      description: Reads Teamwork Graph for the work items in a Jira fix version and
+        returns the surrounding context - linked goals, pull requests,
+        deployments and recent comment activity - so decisions and dependencies
+        outside Jira are visible.
+      inputs:
+        projectKey:
+          title: Project key
+          type: string
+          required: true
+          description: Jira project key, e.g. PROJ
+        versionName:
+          title: Release version
+          type: string
+          required: true
+          description: Fix version name, e.g. v2.4.0
+    - key: post-readiness-comment
+      name: Post readiness comment
+      function: fn-post-comment
+      actionVerb: CREATE
+      description: Posts a release readiness summary as a comment on a Jira issue, for
+        example the release tracking issue. Use after computing readiness with
+        get-release-readiness.
+      inputs:
+        issueKey:
+          title: Issue key
+          type: string
+          required: true
+          description: Jira issue key to comment on, e.g. PROJ-123
+        comment:
+          title: Comment text
+          type: string
+          required: true
+          description: The readiness summary text to post
+    - key: create-risk-issue
+      name: Create risk issue
+      function: fn-create-risk
+      actionVerb: CREATE
+      description: Creates a new Jira issue describing a release risk, tagged to a fix
+        version, so the team can track and resolve it before shipping.
+      inputs:
+        projectKey:
+          title: Project key
+          type: string
+          required: true
+          description: Jira project key, e.g. PROJ
+        summary:
+          title: Summary
+          type: string
+          required: true
+          description: One-line summary of the risk
+        description:
+          title: Description
+          type: string
+          required: false
+          description: Details and evidence for the risk
+        versionName:
+          title: Release version
+          type: string
+          required: false
+          description: Fix version to tag, e.g. v2.4.0
+  rovo:mcp:
+    - key: shipsignal-mcp
+      name: ShipSignal tools
+      tools:
+        - get-release-readiness
+        - get-release-blockers
+        - get-release-context
+  scheduledTrigger:
+    - key: daily-release-watch
+      function: fn-daily-watch
+      interval: day
+  function:
+    - key: resolver
+      handler: index.resolverHandler
+    - key: fn-get-readiness
+      handler: index.getReleaseReadinessAction
+    - key: fn-get-blockers
+      handler: index.getReleaseBlockersAction
+    - key: fn-get-context
+      handler: index.getReleaseContextAction
+    - key: fn-post-comment
+      handler: index.postReadinessCommentAction
+    - key: fn-create-risk
+      handler: index.createRiskIssueAction
+    - key: fn-daily-watch
+      handler: index.dailyWatchHandler
+resources:
+  - key: main
+    path: static/main
+  - key: agent-resources
+    path: resources/agent
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - read:jira-user
+    - storage:app
+    - read:graph:issue:jira
+    - read:graph:issue-comment:jira
+    - read:graph:project:jira
+    - read:graph:version:jira
+    - read:graph:user:atlassian
+    - read:graph:goal:atlassian
+    - read:graph:pull-request:external
+    - read:graph:deployment:external
+app:
+  runtime:
+    name: nodejs22.x
+  id: ari:cloud:ecosystem::app/6543d7c4-0d28-4da6-9f58-2e6d8d64c533
+  name: ShipSignal

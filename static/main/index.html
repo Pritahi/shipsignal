@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ShipSignal</title>
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg width="30" height="30" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      <rect x="1" y="1" width="30" height="30" rx="7" fill="#0c66e4"/>
+      <path d="M7 20.5c2.2-1.4 4.3-1.4 6.5 0s4.3 1.4 6.5 0 4.3-1.4 6 0" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+      <path d="M16 6l5.2 9.5H10.8L16 6z" fill="#fff"/>
+    </svg>
+    <div>
+      <h1>ShipSignal</h1>
+      <div class="tag">Release confidence, with Teamwork Graph context</div>
+    </div>
+  </header>
+
+  <div id="errors"></div>
+  <div id="app"><div class="card"><span class="spin"></span> Loading project...</div></div>
+</div>
+<script src="bridge.bundle.js"></script>
+<script>
+const { invoke, view } = window.shipsignal;
+const $ = (s) => document.querySelector(s);
+const app = $('#app');
+let state = { projectKey: null, versions: [], version: null, report: null };
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function showError(msg) { $('#errors').innerHTML = '<div class="err">' + esc(msg) + '</div>'; }
+function clearErrors() { $('#errors').innerHTML = ''; }
+
+async function boot() {
+  try {
+    const ctx = await view.getContext();
+    const pk = ctx?.extension?.project?.key || ctx?.localId?.match(/projects\/([A-Z0-9]+)/)?.[1];
+    if (!pk) { app.innerHTML = '<div class="card empty"><h3>Open ShipSignal from a Jira project</h3><p class="muted">The dashboard lives in the project navigation.</p></div>'; return; }
+    state.projectKey = pk;
+    await loadVersions();
+  } catch (e) { showError('Failed to start: ' + (e.message || e)); }
+}
+
+async function loadVersions() {
+  app.innerHTML = '<div class="card"><span class="spin"></span> Loading releases for ' + esc(state.projectKey) + '...</div>';
+  try {
+    const versions = await invoke('getVersions', { projectKey: state.projectKey });
+    state.versions = versions || [];
+    if (!state.versions.length) return renderNoVersions();
+    state.version = state.version && state.versions.find(v => v.name === state.version) ? state.version : state.versions[0].name;
+    renderShell();
+    await loadReadiness();
+  } catch (e) { showError('Could not load versions: ' + (e.message || e)); app.innerHTML=''; }
+}
+
+function renderNoVersions() {
+  app.innerHTML = `
+    <div class="card empty">
+      <h3>No unreleased versions in ${esc(state.projectKey)}</h3>
+      <p class="muted" style="margin-bottom:16px">ShipSignal scores a fix version's readiness. Create a version in Jira, or generate a realistic demo release to explore.</p>
+      <button class="primary" id="demoBtn">Generate demo release "v2.4.0 Phoenix"</button>
+    </div>`;
+  $('#demoBtn').onclick = generateDemo;
+}
+
+async function generateDemo() {
+  $('#demoBtn').disabled = true;
+  $('#demoBtn').textContent = 'Creating demo release...';
+  try {
+    const r = await invoke('generateDemoData', { projectKey: state.projectKey });
+    await loadVersions();
+  } catch (e) { showError('Demo data failed: ' + (e.message || e)); $('#demoBtn').disabled = false; $('#demoBtn').textContent = 'Try again'; }
+}
+
+function renderShell() {
+  const opts = state.versions.map(v => `<option value="${esc(v.name)}" ${v.name===state.version?'selected':''}>${esc(v.name)}${v.releaseDate ? ' - due ' + esc(v.releaseDate) : ''}</option>`).join('');
+  app.innerHTML = `
+    <div class="controls">
+      <label class="muted" for="versionSel">Release</label>
+      <select id="versionSel">${opts}</select>
+      <button class="ghost" id="refreshBtn">Re-evaluate</button>
+    </div>
+    <div id="report"><div class="card"><span class="spin"></span> Evaluating readiness...</div></div>`;
+  $('#versionSel').onchange = (e) => { state.version = e.target.value; loadReadiness(); };
+  $('#refreshBtn').onclick = () => loadReadiness();
+}
+
+function gaugeSvg(score, verdict) {
+  const color = verdict === 'SHIP' ? 'var(--green)' : verdict === 'RISKY' ? 'var(--yellow)' : 'var(--red)';
+  const r = 70, cx = 90, cy = 90, circ = 2 * Math.PI * r;
+  const off = circ * (1 - score / 100);
+  return `<svg width="180" height="180" viewBox="0 0 180 180">
+    <circle cx="${cx}" cy="${cy}" r="${r}" stroke="#edf0f3" stroke-width="14" fill="none"/>
+    <circle cx="${cx}" cy="${cy}" r="${r}" stroke="${color}" stroke-width="14" fill="none" stroke-linecap="round"
+      stroke-dasharray="${circ}" stroke-dashoffset="${off}" transform="rotate(-90 ${cx} ${cy})"/>
+    <text x="${cx}" y="${cy - 4}" text-anchor="middle" font-size="38" font-weight="700" fill="var(--text)">${score}</text>
+    <text x="${cx}" y="${cy + 20}" text-anchor="middle" font-size="13" fill="var(--subtle)">out of 100</text>
+  </svg>`;
+}
+
+function verdictText(r) {
+  if (r.verdict === 'SHIP') return 'Healthy. Confirm go/no-go with the team.';
+  if (r.verdict === 'RISKY') return 'Open risks. Review blockers before the date.';
+  return 'Do not ship yet. Escalate and re-plan scope.';
+}
+
+async function loadReadiness() {
+  clearErrors();
+  $('#report').innerHTML = '<div class="card"><span class="spin"></span> Evaluating readiness for ' + esc(state.version) + ' - reading Jira and Teamwork Graph...</div>';
+  try {
+    const r = await invoke('getReadiness', { projectKey: state.projectKey, versionName: state.version });
+    state.report = r;
+    renderReport(r);
+  } catch (e) {
+    $('#report').innerHTML = '<div class="err">Readiness check failed: ' + esc(e.message || e) + '</div>';
+  }
+}
+
+function renderReport(r) {
+  const vClass = r.verdict === 'SHIP' ? 'v-ship' : r.verdict === 'RISKY' ? 'v-risky' : 'v-hold';
+  const factors = r.factors.map(f => `
+    <div class="factor">
+      <div class="row"><span>${esc(f.label)} <span class="muted">(${f.weight}%)</span></span><strong>${f.value}</strong></div>
+      <div class="bar"><div class="fill" style="width:${f.value}%"></div></div>
+      <div class="detail">${esc(f.detail)}</div>
+    </div>`).join('');
+
+  const blockerRows = r.topBlockers.length
+    ? r.topBlockers.map(b => `<tr><td class="key">${esc(b.key)}</td><td>${esc(b.summary)}</td><td><span class="pill ${esc((b.priority||'').toLowerCase())}">${esc(b.priority)}</span></td><td>${esc(b.status)}</td><td>${esc(b.assignee)}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="muted">No unresolved blockers. Nice.</td></tr>';
+
+  const staleRows = r.staleIssues.length
+    ? r.staleIssues.map(b => `<tr><td class="key">${esc(b.key)}</td><td>${esc(b.summary)}</td><td>${esc(b.assignee)}</td></tr>`).join('')
+    : '';
+
+  const c = r.context;
+  const ctxItems = [];
+  ctxItems.push(`<li><strong>${c.goals.length}</strong> linked goals ${c.goals.slice(0,3).map(g => '<span class="pill">' + esc(g.name || g.id) + '</span>').join(' ')}</li>`);
+  ctxItems.push(`<li><strong>${c.pullRequests.length}</strong> pull requests across ${c.issuesWithPR} issues</li>`);
+  ctxItems.push(`<li><strong>${c.deployments.length}</strong> deployments linked</li>`);
+  ctxItems.push(`<li><strong>${c.recentComments}</strong> comments in the last 14 days</li>`);
+
+  $('#report').innerHTML = `
+    <div class="grid">
+      <div class="card" style="text-align:center">
+        <h2>Readiness</h2>
+        ${gaugeSvg(r.score, r.verdict)}
+        <div style="margin:10px 0"><span class="verdict-chip ${vClass}">${r.verdict}</span></div>
+        <div class="gauge-label">${verdictText(r)}</div>
+        <div class="hint">Ask the <strong>ShipSignal</strong> agent in Rovo chat: "Can we ship ${esc(r.versionName)}?" - it reads the same engine and can post this summary for the team.</div>
+      </div>
+      <div class="card">
+        <h2>Why this score</h2>
+        ${factors}
+      </div>
+    </div>
+    <div class="grid" style="margin-top:16px">
+      <div class="card">
+        <h2>Teamwork Graph context</h2>
+        <ul class="ctx-list">${ctxItems.join('')}</ul>
+        ${c.errors && c.errors.length ? '<p class="muted" style="margin-top:8px">Some graph reads failed on this site; showing what was readable. First error: ' + esc(c.errors[0]) + '</p>' : ''}
+      </div>
+      <div class="card">
+        <h2>Blockers (${r.counts.blockers}) and stale work (${r.counts.stale})</h2>
+        <table><thead><tr><th>Key</th><th>Summary</th><th>Priority</th><th>Status</th><th>Assignee</th></tr></thead>
+        <tbody>${blockerRows}</tbody></table>
+        ${staleRows ? '<h2 style="margin-top:16px">Stale</h2><table><tbody>' + staleRows + '</tbody></table>' : ''}
+      </div>
+    </div>
+    <p class="muted" style="margin-top:14px">Evaluated ${esc(r.generatedAt)} - ${r.counts.done}/${r.counts.total} done, ${r.counts.open} open, ${r.counts.unestimated} unestimated.</p>`;
+}
+
+boot();
+</script>
+</body>
+</html>

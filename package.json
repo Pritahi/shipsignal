@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "ShipSignal - release confidence with Teamwork Graph context",
   "main": "src/index.js",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "dependencies": {
     "@forge/api": "^8.5.0",
     "@forge/bridge": "^7.3.0",
